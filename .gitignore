@@ -1,0 +1,103 @@
+## Build results
+bin/
+obj/
+out/
+
+## .NET Core generated files
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## User-specific files
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+
+## VS Code settings
+.vscode/
+
+## Rider settings
+.idea/
+
+## Visual Studio
+.vs/
+
+## ASP.NET temporary files
+Generated_Code/
+
+## NuGet
+*.nupkg
+*.snupkg
+*.nuspec
+.nuget/
+packages/
+*.psmdcp
+
+## DotCover
+*.dotCover
+
+## Logs
+*.log
+*.tlog
+
+## Web files
+wwwroot/dist/
+wwwroot/node_modules/
+npm-debug.log
+yarn-error.log
+
+## Node.js (if using frontend in same repo)
+node_modules/
+dist/
+.env
+.env.*
+
+## Others
+_ReSharper*/
+*.dbmdl
+*.bak
+*.sql
+*.sqlite
+*.mdf
+*.ldf
+
+# Local database
+App_Data/
+*.db
+
+## Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+*.testsettings
+*.runsettings
+*.vsp
+*.vspx
+*.sap
+*.cache
+*.pdb
+
+## Deployment
+publish/
+*.Publish.xml
+
+## Global tools
+.tools/
+
+# Dotnet watch
+**/appsettings.Development.json
+**/appsettings.Local.json
+
+# Secret Manager
+secrets.json
+
+# Docker
+docker-compose.override.yml
+docker-compose.override.*.yml
+.docker/
+
+# Temporary files
+*.tmp
+*.temp
