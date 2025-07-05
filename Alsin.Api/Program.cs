@@ -12,6 +12,11 @@ namespace Alsin.Api
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
+            builder.WebHost.ConfigureKestrel(options =>
+            {
+                options.ListenAnyIP(80);
+            });
+
             var app = builder.Build();
 
             if (app.Environment.IsDevelopment())
