@@ -8,6 +8,10 @@ using Alsin.Api.JWT;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 using Alsin.Api.Services;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
+using Alsin.Api.Data;
 
 namespace Alsin.Api.Controllers.Auth
 {
@@ -20,13 +24,15 @@ namespace Alsin.Api.Controllers.Auth
         private readonly EmailService _emailService;
         private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly IConfiguration _config;
-        public AuthController(UserManager<ApplicationUser> userManager, JwtTokenGenerator jwtTokenGenerator, EmailService emailService, SignInManager<ApplicationUser> signInManager, IConfiguration config)
+        private readonly ApplicationDbContext _context;
+        public AuthController(UserManager<ApplicationUser> userManager, JwtTokenGenerator jwtTokenGenerator, EmailService emailService, SignInManager<ApplicationUser> signInManager, IConfiguration config, ApplicationDbContext context)
         {
             _userManager = userManager;
             _jwtTokenGenerator = jwtTokenGenerator;
             _emailService = emailService;
             _signInManager = signInManager;
             _config = config;
+            _context = context;
         }
 
         [HttpPost("register")]
@@ -110,15 +116,37 @@ namespace Alsin.Api.Controllers.Auth
                 var roles = await _userManager.GetRolesAsync(user);
                 var token = _jwtTokenGenerator.GenerateToken(user, roles);
 
-                var cookieOptions = new CookieOptions
+                var refreshTokenValue = GenerateSecureToken();
+
+                var refreshTokenExpirationDays = _config.GetValue<int>("JwtSettings:RefreshTokenExpirationDays");
+                var refreshToken = new RefreshToken
+                {
+                    TokenHash = HashToken(refreshTokenValue),
+                    UserId = user.Id,
+                    CreatedAt = DateTime.UtcNow,
+                    ExpiresAt = DateTime.UtcNow.AddDays(refreshTokenExpirationDays)
+                };
+
+                _context.RefreshTokens.Add(refreshToken);
+                await _context.SaveChangesAsync();
+
+                var AccessTokenExpirationMinutes = _config.GetValue<int>("JwtSettings:AccessTokenExpirationMinutes");
+
+                Response.Cookies.Append("jwt_token", token, new CookieOptions
                 {
                     HttpOnly = true,
                     Secure = true,
                     SameSite = SameSiteMode.Strict,
-                    Expires = DateTime.UtcNow.AddMinutes(30)
-                };
+                    Expires = DateTime.UtcNow.AddMinutes(AccessTokenExpirationMinutes)
+                });
 
-                Response.Cookies.Append("jwt_token", token, cookieOptions);
+                Response.Cookies.Append("refresh_token", refreshTokenValue, new CookieOptions
+                {
+                    HttpOnly = true,
+                    Secure = true,
+                    SameSite = SameSiteMode.Strict,
+                    Expires = DateTime.UtcNow.AddDays(refreshTokenExpirationDays)
+                }); 
 
                 return Ok(new { message = "Logged in successfully" });
             }
@@ -143,6 +171,65 @@ namespace Alsin.Api.Controllers.Auth
             return Ok(new { message = "Logged out" });
         }
 
+        [HttpPost("refresh-token")]
+        public async Task<IActionResult> RefreshToken()
+        {
+            if (!Request.Cookies.TryGetValue("refresh_token", out var refreshTokenValue))
+                return Unauthorized("Refresh token is missing.");
+
+            var refreshTokenHash = HashToken(refreshTokenValue);
+
+            var refreshToken = await _context.RefreshTokens
+                .Include(rt => rt.User)
+                .FirstOrDefaultAsync(rt => rt.TokenHash == refreshTokenHash);
+
+            if (refreshToken == null || refreshToken.IsRevoked || refreshToken.ExpiresAt <= DateTime.UtcNow)
+                return Unauthorized("Invalid refresh token.");
+
+            var user = refreshToken.User;
+            var roles = await _userManager.GetRolesAsync(user);
+
+            // Generate new access token
+            var newAccessToken = _jwtTokenGenerator.GenerateToken(user, roles);
+
+            // Generate new refresh token and revoke old one
+            var newRefreshTokenValue = GenerateSecureToken();
+            var newRefreshToken = new RefreshToken
+            {
+                TokenHash = HashToken(newRefreshTokenValue),
+                UserId = user.Id,
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddDays(7)
+            };
+
+            refreshToken.IsRevoked = true;
+            refreshToken.RevokedAt = DateTime.UtcNow;
+            refreshToken.ReplacedByTokenHash = newRefreshToken.TokenHash;
+
+            _context.RefreshTokens.Add(newRefreshToken);
+            _context.RefreshTokens.Update(refreshToken);
+            await _context.SaveChangesAsync();
+
+            // Update cookies
+            Response.Cookies.Append("jwt_token", newAccessToken, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Strict,
+                Expires = DateTime.UtcNow.AddMinutes(15)
+            });
+
+            Response.Cookies.Append("refresh_token", newRefreshTokenValue, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Strict,
+                Expires = newRefreshToken.ExpiresAt
+            });
+
+            return Ok(new { message = "Token refreshed" });
+        }
+
         [HttpGet("me")]
         [Authorize]
         public async Task<IActionResult> GetCurrentUser()
@@ -161,6 +248,23 @@ namespace Alsin.Api.Controllers.Auth
                 user.LastName,
                 Role = roles,
             });
+        }
+
+        private string GenerateSecureToken()
+        {
+            var randomNumber = new byte[64];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(randomNumber);
+                return Convert.ToBase64String(randomNumber);
+            }
+        }
+
+        private string HashToken(string token)
+        {
+            var secret = _config["JwtSettings:RefreshTokenHashSecret"];
+            using var hmac = new HMACSHA256(Convert.FromHexString(secret));
+            return Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(token)));
         }
     }
 }

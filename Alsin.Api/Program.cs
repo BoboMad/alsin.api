@@ -71,6 +71,19 @@ namespace Alsin.Api
                 };
             });
 
+            var frontendUrl = builder.Configuration.GetValue<string>("Frontend:BaseUrl");
+            builder.Services.AddCors(options =>
+            {
+                options.AddPolicy("CorsPolicy", builder =>
+                {
+                    builder
+                      .WithOrigins(frontendUrl, "http://localhost:3000")
+                      .AllowCredentials()
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
+                });
+            });
+
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
@@ -92,6 +105,7 @@ namespace Alsin.Api
             }
 
             app.UseHttpsRedirection();
+            app.UseCors("CorsPolicy");
             app.UseAuthentication();
             app.UseAuthorization();
             app.MapControllers();
