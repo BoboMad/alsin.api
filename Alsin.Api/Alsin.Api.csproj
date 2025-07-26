@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="AspNet.Security.OAuth.Discord" Version="9.4.0" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.Google" Version="9.0.6" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Google" Version="9.0.7" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.6" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="9.0.6" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.2" />
@@ -26,7 +26,6 @@
 
   <ItemGroup>
     <Folder Include="Controllers\Email\Dtos\" />
-    <Folder Include="Helpers\" />
   </ItemGroup>
 
 </Project>

@@ -20,7 +20,7 @@ namespace Alsin.Api.Services
         {
             var request = new EmailRequest
             {
-                From = "Alsin <noreply@forsberg.cc>",
+                From = "Alvsinn <noreply@forsberg.cc>",
                 To = email,
                 Subject = "Confirm your email",
                 Html = htmlContent
@@ -50,8 +50,10 @@ namespace Alsin.Api.Services
         {
             var query = string.Join("&", queryParams.Select(kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
             var url = $"{_frontendBaseUrl}/api/{templateEndpoint}?{query}";
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("x-api-key", _config["Frontend:ApiKey"]);
 
-            var response = await _httpClient.GetAsync(url);
+            var response = await _httpClient.SendAsync(request);
 
             if (!response.IsSuccessStatusCode)
             {

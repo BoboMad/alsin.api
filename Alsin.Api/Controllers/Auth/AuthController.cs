@@ -12,6 +12,9 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
 using Alsin.Api.Data;
+using Microsoft.AspNetCore.RateLimiting;
+using Azure.Core;
+using Alsin.Api.Helpers;
 
 namespace Alsin.Api.Controllers.Auth
 {
@@ -35,14 +38,26 @@ namespace Alsin.Api.Controllers.Auth
             _context = context;
         }
 
+        [EnableRateLimiting("fixed")]
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterRequestDto model)
         {
             try
             {
+                if(!ModelState.IsValid) {
+                    return this.BadRequestMessage("Invalid user information");
+                }
+
                 var userExists = await _userManager.FindByEmailAsync(model.Email);
                 if (userExists != null)
-                    return BadRequest("User already exists!");
+                {
+                    if (userExists.EmailConfirmed)
+                    {
+                        return this.ConflictMessage("User already exists!"); 
+                    }
+
+                    await _userManager.DeleteAsync(userExists);
+                }
 
                 var user = new ApplicationUser
                 {
@@ -51,17 +66,13 @@ namespace Alsin.Api.Controllers.Auth
                     FirstName = model.FirstName,
                     LastName = model.LastName,
                     DateOfBirth = model.DateOfBirth,
-                    Country = model.Country,
-                    City = model.City,
-                    AddressLine = model.AddressLine,
-                    ZipCode = model.ZipCode,
-                    PhoneNumber = model.PhoneNumber
+                    EmailConfirmed = false,
                 };
 
                 var result = await _userManager.CreateAsync(user, model.Password);
 
                 if (!result.Succeeded)
-                    return BadRequest(result.Errors);
+                    return this.BadRequestMessage("Account registration failed, please try again.");
 
                 await _userManager.AddToRoleAsync(user, UserRoles.User.ToString());
                 var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
@@ -73,35 +84,42 @@ namespace Alsin.Api.Controllers.Auth
                 });
                 await _emailService.SendConfirmationEmail(user.Email, html);
 
-                return Ok("User created successfully. Please check your email to confirm your account.");
+                return this.OkMessage("User created successfully. Please check your email to confirm your account.");
             }
             catch (Exception ex)
             {
-                return BadRequest(new { message = ex.Message });
+                return this.BadRequestMessage("An error occurred during registration");
             }
         }
 
-        [HttpGet("confirm-email")]
-        public async Task<IActionResult> ConfirmEmail(string email, string token)
+        [EnableRateLimiting("confirm-email")]
+        [HttpPost("confirm-email")]
+        public async Task<IActionResult> ConfirmEmail(ConfirmEmailDto request)
         {
-            var user = await _userManager.FindByEmailAsync(email);
+            var user = await _userManager.FindByEmailAsync(request.Email);
             if (user == null)
-                return BadRequest("Invalid email.");
+                return this.BadRequestMessage("Invalid email.");
 
-            var result = await _userManager.ConfirmEmailAsync(user, token);
+            if (user.EmailConfirmed)
+                return this.BadRequestMessage("Email already confirmed, please log in");
+
+            var result = await _userManager.ConfirmEmailAsync(user, request.Token);
             if (!result.Succeeded)
-                return BadRequest("Email confirmation failed.");
+                return this.BadRequestMessage("Email confirmation failed, try requesting a new confirmation link.");
 
-            return Ok("Email confirmed successfully!");
+            await _userManager.UpdateSecurityStampAsync(user);
+
+            return this.OkMessage("Email confirmed successfully!");
         }
 
+        [EnableRateLimiting("fixed")]
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequestDto loginDto)
         {
             var user = await _userManager.FindByEmailAsync(loginDto.Email);
             if (user == null || !await _userManager.CheckPasswordAsync(user, loginDto.Password))
             {
-                return Unauthorized("Invalid credentials.");
+                return this.UnauthorizedMessage("Invalid credentials.");
             }
 
             var result = await _signInManager.PasswordSignInAsync(
@@ -113,6 +131,8 @@ namespace Alsin.Api.Controllers.Auth
 
             if (result.Succeeded)
             {
+                await RevokeTokenChain(user.Id);
+
                 var roles = await _userManager.GetRolesAsync(user);
                 var token = _jwtTokenGenerator.GenerateToken(user, roles);
 
@@ -148,34 +168,35 @@ namespace Alsin.Api.Controllers.Auth
                     Expires = DateTime.UtcNow.AddDays(refreshTokenExpirationDays)
                 }); 
 
-                return Ok(new { message = "Logged in successfully" });
+                return this.OkMessage("Logged in successfully");
             }
 
             if (result.IsNotAllowed)
             {
-                return Unauthorized("Login not allowed. Please confirm your email.");
+                return this.UnauthorizedMessage("Login not allowed. Please confirm your email.");
             }
 
             if (result.IsLockedOut)
             {
-                return Forbid("Account locked due to too many failed attempts.");
+                return this.ForbiddenMessage("Account locked due to too many failed attempts.");
             }
 
-            return Unauthorized("Invalid login attempt.");
+            return this.UnauthorizedMessage("Invalid login attempt.");
         }
 
         [HttpPost("logout")]
         public IActionResult Logout()
         {
             Response.Cookies.Delete("jwt_token");
-            return Ok(new { message = "Logged out" });
+            return this.OkMessage("Logged out");
         }
 
+        [EnableRateLimiting("fixed")]
         [HttpPost("refresh-token")]
         public async Task<IActionResult> RefreshToken()
         {
             if (!Request.Cookies.TryGetValue("refresh_token", out var refreshTokenValue))
-                return Unauthorized("Refresh token is missing.");
+                return this.UnauthorizedMessage("Refresh token is missing.");
 
             var refreshTokenHash = HashToken(refreshTokenValue);
 
@@ -183,16 +204,31 @@ namespace Alsin.Api.Controllers.Auth
                 .Include(rt => rt.User)
                 .FirstOrDefaultAsync(rt => rt.TokenHash == refreshTokenHash);
 
-            if (refreshToken == null || refreshToken.IsRevoked || refreshToken.ExpiresAt <= DateTime.UtcNow)
-                return Unauthorized("Invalid refresh token.");
+            if (refreshToken == null)
+                return this.UnauthorizedMessage ("refresh_token_invalid");
+
+            if (refreshToken.IsRevoked || refreshToken.ExpiresAt <= DateTime.UtcNow)
+            {
+                // Check for reuse attack
+                if (refreshToken.ReplacedByTokenHash != null)
+                {
+                    await RevokeTokenChain(refreshToken.UserId);
+                    return this.UnauthorizedMessage("refresh_token_reused");
+                }
+
+                return this.UnauthorizedMessage("refresh_token_expired_or_revoked");
+            }
+
+            if (refreshToken.CreatedAt < DateTime.UtcNow.AddDays(-30))
+            {
+                await RevokeTokenChain(refreshToken.UserId);
+                return this.UnauthorizedMessage("session_expired");
+            }
 
             var user = refreshToken.User;
             var roles = await _userManager.GetRolesAsync(user);
 
-            // Generate new access token
             var newAccessToken = _jwtTokenGenerator.GenerateToken(user, roles);
-
-            // Generate new refresh token and revoke old one
             var newRefreshTokenValue = GenerateSecureToken();
             var newRefreshToken = new RefreshToken
             {
@@ -227,7 +263,47 @@ namespace Alsin.Api.Controllers.Auth
                 Expires = newRefreshToken.ExpiresAt
             });
 
-            return Ok(new { message = "Token refreshed" });
+            return this.OkMessage("Token refreshed");
+        }
+
+        [EnableRateLimiting("fixed")]
+        [HttpPost("resend-confirmation-email")]
+        public async Task<IActionResult> ResendConfirmation(string email)
+        {
+            try
+            {
+                var user = await _userManager.FindByEmailAsync(email);
+                if (user == null || user.EmailConfirmed)
+                    return Ok(); 
+
+                var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+                var html = await _emailService.RenderEmailTemplateAsync("render-confirmation-email", new Dictionary<string, string>
+                                {
+                                    { "name", user.FirstName },
+                                    { "token", token }
+                                });
+                await _emailService.SendConfirmationEmail(user.Email!, html);
+
+                return this.OkMessage("Confirmation link resent, check your mail.");
+            }
+            catch (Exception ex)
+            {
+                return this.BadRequestMessage(ex.Message);
+            }
+        }
+
+        private async Task RevokeTokenChain(string userId)
+        {
+            var tokens = await _context.RefreshTokens
+                .Where(rt => rt.UserId == userId && !rt.IsRevoked)
+                .ToListAsync();
+
+            foreach (var token in tokens)
+            {
+                token.IsRevoked = true;
+                token.RevokedAt = DateTime.UtcNow;
+            }
+            await _context.SaveChangesAsync();
         }
 
         [HttpGet("me")]

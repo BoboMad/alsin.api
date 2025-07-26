@@ -6,6 +6,7 @@ using Alsin.Api.Models.Enums;
 using Alsin.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -32,6 +33,21 @@ namespace Alsin.Api
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddDefaultTokenProviders();
 
+            builder.Services.AddAuthentication()
+                            .AddGoogle(options =>
+                            {
+                                options.ClientId = builder.Configuration["Authentication:Google:ClientId"];
+                                options.ClientSecret = builder.Configuration["Authentication:Google:ClientSecret"];
+                                options.SignInScheme = IdentityConstants.ExternalScheme;
+                                options.Scope.Add("profile");
+                                options.Scope.Add("email");
+                            });
+
+            //Confirmation mail token 
+            //builder.Services.Configure<DataProtectionTokenProviderOptions>(options =>
+            //{
+            //    options.TokenLifespan = TimeSpan.FromHours(24);
+            //});
 
             //JWT Authentication configuration
             var jwtSettings = builder.Configuration.GetSection("JwtSettings");
@@ -84,6 +100,22 @@ namespace Alsin.Api
                 });
             });
 
+            builder.Services.AddRateLimiter(options =>
+            {
+                options.AddFixedWindowLimiter(policyName: "fixed", options =>
+                {
+                    options.Window = TimeSpan.FromMinutes(1);
+                    options.PermitLimit = 5;
+                    options.QueueLimit = 0;
+                });
+                options.AddFixedWindowLimiter(policyName: "confirm-email", options =>
+                {
+                    options.Window = TimeSpan.FromMinutes(1);
+                    options.PermitLimit = 5;
+                    options.QueueLimit = 0;
+                });
+            });
+
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
@@ -104,6 +136,7 @@ namespace Alsin.Api
                 app.UseSwaggerUI();
             }
 
+            app.UseRateLimiter();
             app.UseHttpsRedirection();
             app.UseCors("CorsPolicy");
             app.UseAuthentication();
